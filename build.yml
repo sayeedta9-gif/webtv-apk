@@ -1,0 +1,286 @@
+name: Build WebView TV APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "App name"
+        required: true
+        default: "TikTok"
+      start_url:
+        description: "Website URL"
+        required: true
+        default: "https://www.tiktok.com/?lang=ar"
+      app_id:
+        description: "Package id (lowercase, e.g. com.webtv.tiktok)"
+        required: true
+        default: "com.webtv.tiktok"
+      desktop_site:
+        description: "Desktop site mode (better for TV remote)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Gradle 8.13
+        run: |
+          curl -fsSL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o /tmp/g.zip
+          unzip -q /tmp/g.zip -d /opt
+          echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Android project
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          START_URL: ${{ inputs.start_url }}
+          APP_ID: ${{ inputs.app_id }}
+          DESKTOP: ${{ inputs.desktop_site }}
+        run: |
+          set -e
+          [[ "$APP_ID" =~ ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$ ]] || { echo "Bad package id"; exit 1; }
+          mkdir -p app/src/main/java/com/webtv/app app/src/main/res/values app/src/main/res/drawable
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "WebTV"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.13.0' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle <<EOF
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.webtv.app'
+              compileSdk 35
+              buildToolsVersion "35.0.0"
+              defaultConfig {
+                  applicationId "$APP_ID"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@drawable/ic_launcher"
+                  android:banner="@drawable/banner"
+                  android:allowBackup="false"
+                  android:hardwareAccelerated="true"
+                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|uiMode|smallestScreenSize|screenLayout|density">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="96dp" android:height="96dp"
+              android:viewportWidth="96" android:viewportHeight="96">
+              <path android:fillColor="#111111" android:pathData="M0,0h96v96h-96z" />
+              <path android:fillColor="#25F4EE" android:pathData="M36,26L72,48L36,70Z" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/banner.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="320dp" android:height="180dp"
+              android:viewportWidth="320" android:viewportHeight="180">
+              <path android:fillColor="#111111" android:pathData="M0,0h320v180h-320z" />
+              <path android:fillColor="#25F4EE" android:pathData="M134,60L194,90L134,120Z" />
+          </vector>
+          EOF
+
+          python3 - <<'PY'
+          import os
+          from xml.sax.saxutils import escape
+          name = escape(os.environ["APP_NAME"]).replace("'", "\\'")
+          url = escape(os.environ["START_URL"])
+          ua = ""
+          if os.environ.get("DESKTOP") == "true":
+              ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+          xml = ('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n'
+                 '<string name="app_name">%s</string>\n'
+                 '<string name="start_url" formatted="false">%s</string>\n'
+                 '<string name="user_agent" formatted="false">%s</string>\n'
+                 '</resources>\n') % (name, url, ua)
+          open("app/src/main/res/values/strings.xml", "w", encoding="utf-8").write(xml)
+          PY
+
+          cat > app/src/main/java/com/webtv/app/MainActivity.java <<'EOF'
+          package com.webtv.app;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.CookieManager;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import java.util.HashMap;
+          import java.util.Map;
+
+          public class MainActivity extends Activity {
+              private WebView web;
+              private FrameLayout root;
+              private View customView;
+              private WebChromeClient.CustomViewCallback customCallback;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  root = new FrameLayout(this);
+                  web = new WebView(this);
+                  root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+                  setContentView(root);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setUseWideViewPort(true);
+                  s.setLoadWithOverviewMode(true);
+                  s.setSupportZoom(false);
+                  String ua = getString(R.string.user_agent);
+                  if (ua.length() > 0) {
+                      s.setUserAgentString(ua);
+                  }
+                  CookieManager.getInstance().setAcceptCookie(true);
+
+                  web.setFocusable(true);
+                  web.setFocusableInTouchMode(true);
+                  web.requestFocus();
+                  web.setWebViewClient(new WebViewClient());
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onShowCustomView(View view, CustomViewCallback callback) {
+                          if (customView != null) {
+                              callback.onCustomViewHidden();
+                              return;
+                          }
+                          customView = view;
+                          customCallback = callback;
+                          web.setVisibility(View.GONE);
+                          root.addView(view, new FrameLayout.LayoutParams(-1, -1));
+                      }
+
+                      @Override
+                      public void onHideCustomView() {
+                          hideCustom();
+                      }
+                  });
+
+                  Map<String, String> headers = new HashMap<String, String>();
+                  headers.put("Accept-Language", "ar,en;q=0.5");
+                  web.loadUrl(getString(R.string.start_url), headers);
+              }
+
+              private void hideCustom() {
+                  if (customView == null) {
+                      return;
+                  }
+                  root.removeView(customView);
+                  customView = null;
+                  web.setVisibility(View.VISIBLE);
+                  if (customCallback != null) {
+                      customCallback.onCustomViewHidden();
+                      customCallback = null;
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (customView != null) {
+                      hideCustom();
+                  } else if (web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  web.onPause();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  web.destroy();
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Publish APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="build-${GITHUB_RUN_NUMBER}"
+          cp app/build/outputs/apk/debug/app-debug.apk "webtv-${TAG}.apk"
+          gh release create "$TAG" "webtv-${TAG}.apk" --target "$GITHUB_SHA" --title "APK ${TAG}" --notes "WebView TV wrapper. minSdk 24 (Android 7+)."
